@@ -13,9 +13,9 @@
 	<key>CFBundleName</key>
 	<string>AZ Letter Digger</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1</string>
+	<string>0.1.1</string>
 	<key>CFBundleVersion</key>
-	<string>0.1</string>
+	<string>0.1.1</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Hugo Jourdan</string>
 	<key>NSPrincipalClass</key>
