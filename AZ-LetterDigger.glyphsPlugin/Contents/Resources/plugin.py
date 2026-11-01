@@ -9,7 +9,8 @@ scoring logic).
 import traceback
 
 import objc
-from AppKit import NSMenuItem
+from AppKit import NSImage, NSMenu, NSMenuItem, NSWorkspace
+from Foundation import NSURL, NSLog
 from GlyphsApp import WINDOW_MENU, Glyphs
 from GlyphsApp.plugins import GeneralPlugin
 
@@ -36,8 +37,6 @@ def _az_icon(point_size: float = 14.0):
         return cached
     try:
         import os
-
-        from AppKit import NSImage
 
         # The art sits in the bundle's Resources/, but the module asking for it
         # may be a package DEEPER than that (azkeyring/sidebar.py), so walk up.
@@ -75,116 +74,9 @@ def _az_icon(point_size: float = 14.0):
 AZ_TOOLKIT_MENU_TITLE = "AZ Toolkit"
 AZ_TOOLKIT_SITE_TITLE = "More AZ plugins…"
 AZ_TOOLKIT_SITE_URL = "https://azerty-typefaces.com"
-# NSMenuItem doesn't retain its target: the link's opener lives on the main
-# thread's dictionary, which lasts as long as the app.
-AZ_TOOLKIT_OPENER_KEY = "AZToolkit.WindowMenu.SiteOpener.v1"
-
-
-def _az_toolkit_title(name: str) -> str:
-    """A child item's label: the plugin name without its "AZ " prefix."""
-    return name[3:] if name.startswith("AZ ") else name
-
-
-def _az_toolkit_site_opener():
-    """The retained object behind "More AZ plugins…". One per app session."""
-    import objc
-    from AppKit import NSWorkspace
-    from Foundation import NSObject, NSThread, NSURL
-
-    store = NSThread.mainThread().threadDictionary()
-    opener = store.objectForKey_(AZ_TOOLKIT_OPENER_KEY)
-    if opener is not None:
-        return opener
-    try:
-        # Another AZ plugin already defined it: ObjC class names are global to
-        # the process and all Python plugins share one interpreter, so
-        # re-declaring the class raises instead of shadowing.
-        opener_class = objc.lookUpClass("AZToolkitSiteOpener")
-    except objc.error:
-
-        class AZToolkitSiteOpener(NSObject):
-            def openAZSite_(self, sender) -> None:
-                NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(AZ_TOOLKIT_SITE_URL))
-
-        opener_class = AZToolkitSiteOpener
-    opener = opener_class.alloc().init()
-    store.setObject_forKey_(opener, AZ_TOOLKIT_OPENER_KEY)
-    return opener
-
-
-def _az_toolkit_menu():
-    """Find-or-create ``Window ▸ AZ Toolkit`` and return its NSMenu, or None if
-    the Window menu is not the shape we expect."""
-    from AppKit import NSImage, NSMenu, NSMenuItem
-
-    try:
-        window_menu = Glyphs.menu[WINDOW_MENU].submenu()
-        existing_items = list(window_menu.itemArray())
-    except Exception:
-        return None
-    for item in existing_items:
-        if str(item.title() or "") == AZ_TOOLKIT_MENU_TITLE:
-            return item.submenu()
-
-    submenu = NSMenu.alloc().initWithTitle_(AZ_TOOLKIT_MENU_TITLE)
-    parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(AZ_TOOLKIT_MENU_TITLE, None, "")
-    parent.setSubmenu_(submenu)
-    # The same symbol the AZ Toolkit pane carries in Settings, so the two
-    # surfaces read as one thing. Guarded: a host without SF Symbols has no
-    # such selector, and an icon is never worth losing the whole menu over.
-    try:
-        icon = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-            "wrench.and.screwdriver", AZ_TOOLKIT_MENU_TITLE
-        )
-        if icon is not None:
-            icon.setTemplate_(True)
-            icon.setSize_((14.0, 14.0))  # menu-item icon metrics
-            parent.setImage_(icon)
-    except Exception:
-        pass
-
-    # Same reasoning as the icon: if the opener cannot be built the plugin items
-    # still belong in the menu, so only the link is dropped.
-    try:
-        site_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            AZ_TOOLKIT_SITE_TITLE, "openAZSite:", ""
-        )
-        site_item.setTarget_(_az_toolkit_site_opener())
-        submenu.addItem_(NSMenuItem.separatorItem())
-        submenu.addItem_(site_item)
-    except Exception:
-        pass
-
-    window_menu.addItem_(NSMenuItem.separatorItem())
-    window_menu.addItem_(parent)
-    return submenu
-
-
-def _install_az_toolkit_item(menu_item) -> None:
-    """Put a plugin's item in the AZ Toolkit submenu, alphabetically, above the
-    trailing separator + site link.
-
-    IDEMPOTENT BY TITLE: reloading a plugin while Glyphs runs calls ``start``
-    again on a menu that already holds the item, and AppKit will happily show
-    two of them.
-    """
-    from AppKit import NSMenuItem
-
-    submenu = _az_toolkit_menu()
-    if submenu is None:  # unexpected menu shape — do not lose the item
-        Glyphs.menu[WINDOW_MENU].append(NSMenuItem.separatorItem())
-        Glyphs.menu[WINDOW_MENU].append(menu_item)
-        return
-    title = str(menu_item.title() or "")
-    for existing in list(submenu.itemArray()):
-        if str(existing.title() or "") == title:
-            submenu.removeItem_(existing)
-    items = list(submenu.itemArray())
-    # The trailing separator is the end of the plugin block; the site link sits
-    # below it and always stays last.
-    end = next((i for i, item in enumerate(items) if item.isSeparatorItem()), len(items))
-    insert_at = next((i for i in range(end) if str(items[i].title() or "") > title), end)
-    submenu.insertItem_atIndex_(menu_item, insert_at)
+# Shared toolkit tag for AZ plugins; Letter Digger's child-item tag is distinct.
+AZ_TOOLKIT_MENU_TAG = 0x415A544B  # AZTK
+AZ_LETTER_DIGGER_MENU_TAG = 0x415A4C44  # AZLD
 
 
 class AZLetterDigger(GeneralPlugin):
@@ -192,18 +84,11 @@ class AZLetterDigger(GeneralPlugin):
     def settings(self):
         self.name = "AZ Letter Digger"
         self.window = None
+        print("__AZLetterDigger", self)
 
     @objc.python_method
     def start(self):
-        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            _az_toolkit_title(self.name), self.showWindow_, ""
-        )
-        item.setTarget_(self)
-        icon = _az_icon(MENU_ICON_HEIGHT)
-        if icon is not None:
-            item.setImage_(icon)
-        # Shared, single-separator AZ group in the Window menu.
-        _install_az_toolkit_item(item)
+        self._install_menu()
 
         # Tab in Glyphs ▸ Settings ▸ AZ Toolkit: show/hide the dice, its colour.
         try:
@@ -222,6 +107,67 @@ class AZLetterDigger(GeneralPlugin):
         NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
             self, "digTagNotification:", "com.hugojourdan.AZLetterDigger.dig", None
         )
+
+    @objc.python_method
+    def _install_menu(self):
+        window_menu = Glyphs.menu[WINDOW_MENU].submenu()
+        print("__window_menu", window_menu)
+        parent = window_menu.itemWithTag_(AZ_TOOLKIT_MENU_TAG)
+        if parent is None:
+            submenu = NSMenu.alloc().initWithTitle_(AZ_TOOLKIT_MENU_TITLE)
+            parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                AZ_TOOLKIT_MENU_TITLE, None, ""
+            )
+            parent.setTag_(AZ_TOOLKIT_MENU_TAG)
+            parent.setSubmenu_(submenu)
+            try:
+                icon = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                    "wrench.and.screwdriver", AZ_TOOLKIT_MENU_TITLE
+                )
+                if icon is not None:
+                    icon.setTemplate_(True)
+                    icon.setSize_((14.0, 14.0))
+                    parent.setImage_(icon)
+            except Exception:
+                import traceback
+                print(traceback.format_exc())
+
+            site_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                AZ_TOOLKIT_SITE_TITLE, "openAZSite:", ""
+            )
+            # GeneralPlugin instances live for the app session, so self remains
+            # a valid target even though NSMenuItem doesn't retain its target.
+            site_item.setTarget_(self)
+            submenu.addItem_(NSMenuItem.separatorItem())
+            submenu.addItem_(site_item)
+            window_menu.addItem_(NSMenuItem.separatorItem())
+            window_menu.addItem_(parent)
+
+        submenu = parent.submenu()
+        item = submenu.itemWithTag_(AZ_LETTER_DIGGER_MENU_TAG)
+        if item is not None:
+            return
+
+        title = self.name[3:] if self.name.startswith("AZ ") else self.name
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title, self.showWindow_, ""
+        )
+        item.setTag_(AZ_LETTER_DIGGER_MENU_TAG)
+        item.setTarget_(self)
+        icon = _az_icon(MENU_ICON_HEIGHT)
+        if icon is not None:
+            item.setImage_(icon)
+
+        # Walk only to find the alphabetical insertion point above the footer.
+        insert_at = submenu.numberOfItems()
+        for index, existing in enumerate(submenu.itemArray()):
+            if existing.isSeparatorItem() or str(existing.title() or "") > title:
+                insert_at = index
+                break
+        submenu.insertItem_atIndex_(item, insert_at)
+
+    def openAZSite_(self, sender):
+        NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(AZ_TOOLKIT_SITE_URL))
 
     def digTagNotification_(self, notification):
         try:
