@@ -140,7 +140,6 @@ class AZLetterDigger(GeneralPlugin):
             site_item.setTarget_(self)
             submenu.addItem_(NSMenuItem.separatorItem())
             submenu.addItem_(site_item)
-            window_menu.addItem_(NSMenuItem.separatorItem())
             window_menu.addItem_(parent)
 
         submenu = parent.submenu()
